@@ -1,0 +1,30 @@
+{
+  "name": "@eil-protocol/demo-contracts",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "test": "hardhat test",
+    "compile": "hardhat compile --force",
+    "verify": "npx hardhat ignition verify chain-11155420 --network op_sepolia",
+    "ignition-deploy-real": "npx hardhat ignition deploy ignition/modules/CaptureTheFlag2.ts --network op_sepolia && npx hardhat ignition deploy ignition/modules/CaptureTheFlag2.ts --network arb_sepolia",
+    "ignition-deploy": "rm -rf ./ignition/deployments && HARDHAT_IGNITION_CONFIRM_DEPLOYMENT=false npx hardhat ignition deploy ignition/modules/CaptureTheFlag2.ts --network op_sepolia && HARDHAT_IGNITION_CONFIRM_DEPLOYMENT=false npx hardhat ignition deploy ignition/modules/CaptureTheFlag2.ts --network arb_sepolia"
+  },
+  "devDependencies": {
+    "@nomicfoundation/hardhat-ignition": "^3.0.3",
+    "@nomicfoundation/hardhat-ignition-viem": "^3.0.3",
+    "@nomicfoundation/hardhat-keystore": "^3.0.1",
+    "@nomicfoundation/hardhat-network-helpers": "^3.0.0",
+    "@nomicfoundation/hardhat-node-test-runner": "^3.0.3",
+    "@nomicfoundation/hardhat-toolbox-viem": "^5.0.0",
+    "@nomicfoundation/hardhat-verify": "^3.0.2",
+    "@nomicfoundation/hardhat-viem": "^3.0.0",
+    "@nomicfoundation/hardhat-viem-assertions": "^3.0.2",
+    "@types/node": "^24.10.1",
+    "forge-std": "github:foundry-rs/forge-std#v1.9.4",
+    "hardhat": "^3.0.6",
+    "viem": "^2.39.3"
+  },
+  "dependencies": {
+    "@openzeppelin/contracts": "^5.4.0"
+  }
+}

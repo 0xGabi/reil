@@ -1,0 +1,10 @@
+[
+  {
+    "chainId": 42161,
+    "captureTheFlag": "0x8e381db530d514109Ae1dae8040d3f8bbc6c0c96"
+  },
+  {
+    "chainId": 8453,
+    "captureTheFlag": "0x8e381db530d514109Ae1dae8040d3f8bbc6c0c96"
+  }
+]
