@@ -5,7 +5,7 @@ import { http } from 'viem'
 
 import { getMultiChainConfig } from '@eil-protocol/sdk'
 
-import FlagsDeployment from '../../deployment/flags.json'
+import AaveDeployment from '../../deployment/aave.json'
 
 const projectId = 'a3c307b5f67aec880eea6812706d67c7'
 
@@ -13,7 +13,7 @@ const projectId = 'a3c307b5f67aec880eea6812706d67c7'
  * Helper function to get chain deployment by chain ID.
  */
 export function getDeploymentChains (): [number, number] {
-  return [FlagsDeployment[0].chainId, FlagsDeployment[1].chainId]
+  return [AaveDeployment[0].chainId, AaveDeployment[1].chainId]
 }
 
 // Helper function to map chain ID to AppKit network

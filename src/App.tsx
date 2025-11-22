@@ -3,7 +3,7 @@ import { SnackbarProvider } from 'notistack'
 import { createTheme, ThemeProvider } from '@mui/material'
 
 import { Header } from './components/header'
-import { Flags } from './components/Flags.tsx'
+import { AavePositions } from './components/AavePositions.tsx'
 
 export const App = () => {
   const darkTheme = createTheme({
@@ -16,7 +16,7 @@ export const App = () => {
       <SnackbarProvider maxSnack={3}>
         <Header/>
         <Container>
-          <Flags/>
+          <AavePositions/>
         </Container>
       </SnackbarProvider>
     </ThemeProvider>
