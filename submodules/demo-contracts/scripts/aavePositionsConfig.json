@@ -1,0 +1,21 @@
+{
+  "chains": [
+    {
+      "chainId": 42161,
+      "name": "Arbitrum",
+      "supplyAmount": "500",
+      "borrowAmount": "100",
+      "collateralToken": "",
+      "borrowToken": ""
+    },
+    {
+      "chainId": 8453,
+      "name": "Base",
+      "supplyAmount": "200",
+      "borrowAmount": "140",
+      "collateralToken": "",
+      "borrowToken": ""
+    }
+  ]
+}
+
