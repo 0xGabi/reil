@@ -25,12 +25,10 @@ export const App = () => {
 
 const Container = styled.div`
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     justify-content: center;
     flex: 1;
-    margin: auto;
     width: 100%;
-    height: 100%;
-    border-radius: 16px;
-    padding: 8px;
+    min-height: 100%;
+    padding: 0;
 `

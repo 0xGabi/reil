@@ -1,18 +1,17 @@
 import {
   Box,
   Button,
-  Card,
-  CardContent,
   CircularProgress,
   Typography,
   Alert,
-  Chip,
-  LinearProgress,
   Stack,
+  Tabs,
+  Tab,
+  Paper,
 } from '@mui/material'
 import { enqueueSnackbar } from 'notistack'
-import { formatUnits, parseUnits } from 'viem'
-import { type JSX, useEffect, useState } from 'react'
+import { parseUnits } from 'viem'
+import { type JSX, useEffect, useState, useCallback } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { CallbackType, type CrossChainSdk, type ExecCallback } from '@eil-protocol/sdk'
@@ -25,50 +24,125 @@ import {
   isPositionUnhealthy,
   rebalanceAavePositions,
   crossChainRebalanceAavePositions,
-} from '../provider/aave/aave.ts'
-import { createEilSdk } from '../provider/flags/flags.ts'
+  createEilSdk,
+} from '../provider/aave/index.ts'
 import { getDeploymentChains } from '../provider/wagmiConfig.ts'
+import { ChainNetwork } from './ChainNetwork.tsx'
+import { RebalanceHistory, type RebalanceRecord } from './RebalanceHistory.tsx'
 
 import DeployedTokensFile from '../../deployment/tokens.json'
 
-const HEALTH_FACTOR_THRESHOLD = parseUnits('1.5', 18)
+const HEALTH_FACTOR_THRESHOLD = parseUnits('1.2', 18)
+const REBALANCE_HISTORY_KEY = 'aave_rebalance_history'
+
+function loadRebalanceHistory(): RebalanceRecord[] {
+  try {
+    const stored = localStorage.getItem(REBALANCE_HISTORY_KEY)
+    if (stored) {
+      return JSON.parse(stored)
+    }
+  } catch (e) {
+    console.error('Failed to load rebalance history:', e)
+  }
+  return []
+}
+
+function saveRebalanceHistory(history: RebalanceRecord[]): void {
+  try {
+    // Keep only last 50 records
+    const limited = history.slice(0, 50)
+    localStorage.setItem(REBALANCE_HISTORY_KEY, JSON.stringify(limited))
+  } catch (e) {
+    console.error('Failed to save rebalance history:', e)
+  }
+}
+
+function addRebalanceRecord(
+  type: 'single-chain' | 'cross-chain',
+  chains: number[],
+  status: 'success' | 'failed' | 'pending',
+  details?: string
+): RebalanceRecord {
+  return {
+    id: `${Date.now()}-${Math.random().toString(36).slice(2, 11)}`,
+    timestamp: Date.now(),
+    type,
+    chains,
+    status,
+    details,
+  }
+}
 
 export function AavePositions(): JSX.Element {
   const [sdk, setSdk] = useState<CrossChainSdk | null>(null)
   const [sdkAccount, setSdkAccount] = useState<AmbireMultiChainSmartAccount | null>(null)
   const [, setCounter] = useState(0)
+  const [rebalanceHistory, setRebalanceHistory] = useState<RebalanceRecord[]>(loadRebalanceHistory())
+  const [activeTab, setActiveTab] = useState(0)
 
   const queryClient = useQueryClient()
-  const [chainId0, chainId1] = getDeploymentChains()
+  const [chainId0, chainId1, chainId2, chainId3] = getDeploymentChains()
+  const chainIds: [number, number, number, number] = [chainId0, chainId1, chainId2, chainId3]
 
   // Construct MultichainToken instances
   const usdcToken: MultichainToken | undefined = sdk?.createToken('USDC', DeployedTokensFile.USDC)
-  // For WETH, we'll use USDC as both collateral and debt token for simplicity
-  // In a real scenario, you'd want to support different token pairs
 
   // Query Aave positions across chains
   const { data: positions, isFetching: isFetchingPositions, error: positionsError } = useQuery({
-    queryKey: ['aavePositions', sdkAccount?.addressOn(BigInt(chainId0)), sdkAccount?.addressOn(BigInt(chainId1))],
+    queryKey: [
+      'aavePositions',
+      sdkAccount?.addressOn(BigInt(chainId0)),
+      sdkAccount?.addressOn(BigInt(chainId1)),
+      sdkAccount?.addressOn(BigInt(chainId2)),
+      sdkAccount?.addressOn(BigInt(chainId3)),
+    ],
     enabled: !!sdkAccount,
-    refetchInterval: 30000, // Refetch every 30 seconds
+    refetchInterval: () => {
+      // Only refetch when window is focused, and use a longer interval (60 seconds)
+      // Return false to disable automatic refetching when window is not focused
+      return document.hasFocus() ? 60000 : false
+    },
+    refetchOnWindowFocus: true, // Refetch when user returns to the window
     queryFn: async (): Promise<AavePosition[]> => {
       if (!sdkAccount) return []
       try {
-        return await fetchAavePositions([chainId0, chainId1], sdkAccount)
+        return await fetchAavePositions([chainId0, chainId1, chainId2, chainId3], sdkAccount)
       } catch (e) {
         console.error(e)
         return []
       }
-    }
+    },
   })
+
+  const updateRebalanceHistory = useCallback((record: RebalanceRecord) => {
+    setRebalanceHistory((prev) => {
+      // Check if a record with the same ID already exists
+      const existingIndex = prev.findIndex((r) => r.id === record.id)
+      let updated: RebalanceRecord[]
+      
+      if (existingIndex >= 0) {
+        // Update existing record
+        updated = [...prev]
+        updated[existingIndex] = record
+      } else {
+        // Add new record at the beginning
+        updated = [record, ...prev]
+      }
+      
+      saveRebalanceHistory(updated)
+      return updated
+    })
+  }, [])
 
   // Define callback function to observe the progress of UserOperations
   const callback: ExecCallback = ({ type, index, revertReason }) => {
-    const chainId = [chainId0, chainId1][index] ?? 'unknown'
+    const chainId = chainIds[index] ?? 'unknown'
     console.log('action executed:', { type, index, chainId, revertReason })
-    enqueueSnackbar(`Rebalancing executed on chain ${chainId} with status: ${type}`, { variant: 'info' })
+    enqueueSnackbar(`Rebalancing executed on chain ${chainId} with status: ${type}`, {
+      variant: 'info',
+    })
     if (type === CallbackType.Done) {
-      setCounter(prev => {
+      setCounter((prev) => {
         const newCounter = prev + 1
         const positionsLength = positions?.length ?? 0
         if (newCounter === positionsLength) {
@@ -83,7 +157,7 @@ export function AavePositions(): JSX.Element {
 
   // Callback for cross-chain rebalancing (invalidates queries on each completion)
   const crossChainCallback: ExecCallback = ({ type, index, revertReason }) => {
-    const chainId = [chainId0, chainId1][index] ?? 'unknown'
+    const chainId = chainIds[index] ?? 'unknown'
     console.log('cross-chain action executed:', { type, index, chainId, revertReason })
     enqueueSnackbar(`Cross-chain rebalancing on chain ${chainId}: ${type}`, { variant: 'info' })
     if (type === CallbackType.Done) {
@@ -98,7 +172,30 @@ export function AavePositions(): JSX.Element {
       if (!sdk || !sdkAccount || !positions || !usdcToken) {
         throw new Error('SDK, account, positions, or tokens not available')
       }
-      await rebalanceAavePositions(sdk, sdkAccount, positions, usdcToken, usdcToken, callback)
+
+      const unhealthyChains = positions
+        .filter((pos) => isPositionUnhealthy(pos, HEALTH_FACTOR_THRESHOLD))
+        .map((pos) => pos.chainId)
+
+      // Add pending record
+      const pendingRecord = addRebalanceRecord('single-chain', unhealthyChains, 'pending')
+      updateRebalanceHistory(pendingRecord)
+
+      try {
+        await rebalanceAavePositions(sdk, sdkAccount, positions, usdcToken, usdcToken, callback)
+        // Update to success
+        const successRecord = { ...pendingRecord, status: 'success' as const }
+        updateRebalanceHistory(successRecord)
+      } catch (error) {
+        // Update to failed
+        const failedRecord = {
+          ...pendingRecord,
+          status: 'failed' as const,
+          details: error instanceof Error ? error.message : 'Unknown error',
+        }
+        updateRebalanceHistory(failedRecord)
+        throw error
+      }
     },
     onSuccess: () => {
       enqueueSnackbar('Rebalancing successful!', { variant: 'success' })
@@ -107,7 +204,7 @@ export function AavePositions(): JSX.Element {
     onError: (err: any) => {
       console.error(err)
       enqueueSnackbar(err?.message ?? 'Rebalancing failed', { variant: 'error' })
-    }
+    },
   })
 
   // Cross-chain rebalance mutation
@@ -116,15 +213,41 @@ export function AavePositions(): JSX.Element {
       if (!sdk || !sdkAccount || !positions || !usdcToken) {
         throw new Error('SDK, account, positions, or tokens not available')
       }
-      await crossChainRebalanceAavePositions(
-        sdk,
-        sdkAccount,
-        positions,
-        usdcToken,
-        crossChainCallback,
-        HEALTH_FACTOR_THRESHOLD,
-        parseUnits('2.0', 18)
-      )
+
+      const unhealthyChains = positions
+        .filter((pos) => isPositionUnhealthy(pos, HEALTH_FACTOR_THRESHOLD))
+        .map((pos) => pos.chainId)
+      const healthyChains = positions
+        .filter((pos) => !isPositionUnhealthy(pos, HEALTH_FACTOR_THRESHOLD) && pos.totalCollateralBase > 0n)
+        .map((pos) => pos.chainId)
+      const allChains = [...new Set([...unhealthyChains, ...healthyChains])]
+
+      // Add pending record
+      const pendingRecord = addRebalanceRecord('cross-chain', allChains, 'pending')
+      updateRebalanceHistory(pendingRecord)
+
+      try {
+        await crossChainRebalanceAavePositions(
+          sdk,
+          sdkAccount,
+          positions,
+          usdcToken,
+          crossChainCallback,
+          HEALTH_FACTOR_THRESHOLD
+        )
+        // Update to success
+        const successRecord = { ...pendingRecord, status: 'success' as const }
+        updateRebalanceHistory(successRecord)
+      } catch (error) {
+        // Update to failed
+        const failedRecord = {
+          ...pendingRecord,
+          status: 'failed' as const,
+          details: error instanceof Error ? error.message : 'Unknown error',
+        }
+        updateRebalanceHistory(failedRecord)
+        throw error
+      }
     },
     onSuccess: () => {
       enqueueSnackbar('Cross-chain rebalancing successful!', { variant: 'success' })
@@ -133,7 +256,7 @@ export function AavePositions(): JSX.Element {
     onError: (err: any) => {
       console.error(err)
       enqueueSnackbar(err?.message ?? 'Cross-chain rebalancing failed', { variant: 'error' })
-    }
+    },
   })
 
   // Build the EIL SDK and Multi-Chain Account instances
@@ -188,180 +311,106 @@ export function AavePositions(): JSX.Element {
   }
 
   const unhealthyPositions = positions?.filter((pos) => isPositionUnhealthy(pos, HEALTH_FACTOR_THRESHOLD)) ?? []
-  const healthyPositions = positions?.filter((pos) => !isPositionUnhealthy(pos, HEALTH_FACTOR_THRESHOLD) && pos.totalCollateralBase > 0n) ?? []
+  const healthyPositions =
+    positions?.filter((pos) => !isPositionUnhealthy(pos, HEALTH_FACTOR_THRESHOLD) && pos.totalCollateralBase > 0n) ??
+    []
   const hasUnhealthyPositions = unhealthyPositions.length > 0
   const hasHealthyPositions = healthyPositions.length > 0
   const canCrossChainRebalance = hasUnhealthyPositions && hasHealthyPositions && positions && positions.length >= 2
 
-  const formatHealthFactor = (hf: bigint): string => {
-    if (hf === 0n) return '∞ (No Debt)'
-    return Number(formatUnits(hf, 18)).toFixed(4)
-  }
-
-  const getHealthFactorColor = (hf: bigint): 'success' | 'warning' | 'error' => {
-    if (hf === 0n) return 'success'
-    const hfNum = Number(formatUnits(hf, 18))
-    if (hfNum >= 2.0) return 'success'
-    if (hfNum >= 1.5) return 'warning'
-    return 'error'
-  }
-
-  const getHealthFactorProgress = (hf: bigint): number => {
-    if (hf === 0n) return 100
-    const hfNum = Number(formatUnits(hf, 18))
-    // Normalize to 0-100 scale, where 1.0 = 0% and 3.0 = 100%
-    return Math.min(100, Math.max(0, ((hfNum - 1.0) / 2.0) * 100))
-  }
-
   return (
-    <Box sx={{ p: 3 }}>
-      <Typography variant="h4" gutterBottom>
-        Aave Position Manager
-      </Typography>
-      <Typography variant="body1" color="text.secondary" sx={{ mb: 3 }}>
-        Monitor and rebalance your Aave positions across multiple chains
+    <Box sx={{ p: 3, maxWidth: '1400px', width: '100%' }}>
+      <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>
+        Automatically rebalance your Aave lending positions across Ethereum, Optimism, Arbitrum, and Base
+        to maintain optimal health factors and reduce liquidation risk.
       </Typography>
 
-      {hasUnhealthyPositions && (
-        <Alert severity="warning" sx={{ mb: 3 }}>
-          <Typography variant="body1" fontWeight="bold">
-            Warning: {unhealthyPositions.length} position(s) have unhealthy health factors
-          </Typography>
-          <Typography variant="body2">
-            Consider rebalancing to improve your position health and avoid liquidation risk.
-            {canCrossChainRebalance && (
-              <> You can use cross-chain rebalancing to transfer collateral from healthy positions.</>
-            )}
-          </Typography>
-        </Alert>
-      )}
+      <Paper sx={{ mb: 3 }}>
+        <Tabs value={activeTab} onChange={(_, newValue) => setActiveTab(newValue)}>
+          <Tab label="Positions Overview" />
+          <Tab label="Rebalance History" />
+        </Tabs>
+      </Paper>
 
-      {positions && positions.length === 0 && (
-        <Alert severity="info" sx={{ mb: 3 }}>
-          No Aave positions found on the configured chains. You may need to create positions first.
-        </Alert>
-      )}
+      {activeTab === 0 && (
+        <Box>
+          {hasUnhealthyPositions && (
+            <Alert severity="warning" sx={{ mb: 3 }}>
+              <Typography variant="body1" fontWeight="bold">
+                ⚠️ Warning: {unhealthyPositions.length} position(s) have unhealthy health factors
+              </Typography>
+              <Typography variant="body2" sx={{ mt: 1 }}>
+                Consider rebalancing to improve your position health and avoid liquidation risk.
+                {canCrossChainRebalance && (
+                  <>
+                    {' '}
+                    You can use cross-chain rebalancing to transfer collateral from healthy positions
+                    on other chains.
+                  </>
+                )}
+              </Typography>
+            </Alert>
+          )}
 
-      <Stack direction={{ xs: 'column', md: 'row' }} spacing={3} sx={{ mb: 3 }}>
-        {positions?.map((position) => {
-          const isUnhealthy = isPositionUnhealthy(position, HEALTH_FACTOR_THRESHOLD)
+          {positions && positions.length === 0 && (
+            <Alert severity="info" sx={{ mb: 3 }}>
+              No Aave positions found on the configured chains. You may need to create positions first.
+            </Alert>
+          )}
 
-          return (
-            <Box key={`${position.chainId}-${position.userAddress}`} sx={{ flex: 1, minWidth: { xs: '100%', md: '300px' } }}>
-              <Card
-                variant="outlined"
-                sx={{
-                  height: '100%',
-                  borderColor: isUnhealthy ? 'error.main' : 'divider',
-                  borderWidth: isUnhealthy ? 2 : 1,
-                }}
-              >
-                <CardContent>
-                  <Box display="flex" justifyContent="space-between" alignItems="center" mb={2}>
-                    <Typography variant="h6">Chain {position.chainId}</Typography>
-                    <Chip
-                      label={`HF: ${formatHealthFactor(position.healthFactor)}`}
-                      color={getHealthFactorColor(position.healthFactor)}
-                      size="small"
-                    />
-                  </Box>
+          <ChainNetwork positions={positions ?? []} chainIds={chainIds} />
 
-                  <Box mb={2}>
-                    <Typography variant="body2" color="text.secondary" gutterBottom>
-                      Health Factor Progress
-                    </Typography>
-                    <LinearProgress
-                      variant="determinate"
-                      value={getHealthFactorProgress(position.healthFactor)}
-                      color={getHealthFactorColor(position.healthFactor)}
-                      sx={{ height: 8, borderRadius: 4 }}
-                    />
-                  </Box>
+          <Box sx={{ mt: 3 }}>
+            <Typography variant="h6" gutterBottom>
+              Rebalancing Actions
+            </Typography>
+            <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} sx={{ mt: 2 }}>
+              {hasUnhealthyPositions && (
+                <Button
+                  variant="contained"
+                  color="warning"
+                  size="large"
+                  onClick={() => rebalanceMutation.mutate()}
+                  disabled={rebalanceMutation.isPending || crossChainRebalanceMutation.isPending || !usdcToken}
+                  startIcon={rebalanceMutation.isPending ? <CircularProgress size={20} /> : undefined}
+                  sx={{ minWidth: 250, py: 1.5 }}
+                >
+                  {rebalanceMutation.isPending
+                    ? 'Rebalancing...'
+                    : 'Rebalance (Single-Chain)'}
+                </Button>
+              )}
+              {canCrossChainRebalance && (
+                <Button
+                  variant="contained"
+                  color="primary"
+                  size="large"
+                  onClick={() => crossChainRebalanceMutation.mutate()}
+                  disabled={rebalanceMutation.isPending || crossChainRebalanceMutation.isPending || !usdcToken}
+                  startIcon={crossChainRebalanceMutation.isPending ? <CircularProgress size={20} /> : undefined}
+                  sx={{ minWidth: 250, py: 1.5 }}
+                >
+                  {crossChainRebalanceMutation.isPending
+                    ? 'Cross-Chain Rebalancing...'
+                    : '🚀 Cross-Chain Rebalance'}
+                </Button>
+              )}
+            </Stack>
+          </Box>
 
-                  <Box mb={2}>
-                    <Typography variant="body2" color="text.secondary">
-                      Total Collateral (USD)
-                    </Typography>
-                    <Typography variant="h6">
-                      ${Number(formatUnits(position.totalCollateralBase, 8)).toFixed(2)}
-                    </Typography>
-                  </Box>
-
-                  <Box mb={2}>
-                    <Typography variant="body2" color="text.secondary">
-                      Total Debt (USD)
-                    </Typography>
-                    <Typography variant="h6" color={position.totalDebtBase > 0n ? 'error.main' : 'text.primary'}>
-                      ${Number(formatUnits(position.totalDebtBase, 8)).toFixed(2)}
-                    </Typography>
-                  </Box>
-
-                  <Box mb={2}>
-                    <Typography variant="body2" color="text.secondary">
-                      Available Borrows (USD)
-                    </Typography>
-                    <Typography variant="h6" color="success.main">
-                      ${Number(formatUnits(position.availableBorrowsBase, 8)).toFixed(2)}
-                    </Typography>
-                  </Box>
-
-                  <Box mb={2}>
-                    <Typography variant="body2" color="text.secondary">
-                      LTV / Liquidation Threshold
-                    </Typography>
-                    <Typography variant="body1">
-                      {Number(formatUnits(position.ltv, 4))}% /{' '}
-                      {Number(formatUnits(position.currentLiquidationThreshold, 4))}%
-                    </Typography>
-                  </Box>
-
-                  <Box>
-                    <Typography variant="body2" color="text.secondary" noWrap>
-                      Account: {position.userAddress.slice(0, 6)}...{position.userAddress.slice(-4)}
-                    </Typography>
-                  </Box>
-                </CardContent>
-              </Card>
-            </Box>
-          )
-        })}
-      </Stack>
-
-      {hasUnhealthyPositions && (
-        <Box display="flex" justifyContent="center" gap={2} mt={3} flexWrap="wrap">
-          <Button
-            variant="contained"
-            color="warning"
-            size="large"
-            onClick={() => rebalanceMutation.mutate()}
-            disabled={rebalanceMutation.isPending || crossChainRebalanceMutation.isPending || !usdcToken}
-            startIcon={rebalanceMutation.isPending ? <CircularProgress size={20} /> : undefined}
-            sx={{ minWidth: 200 }}
-          >
-            {rebalanceMutation.isPending ? 'Rebalancing...' : 'Rebalance Positions (Single-Chain)'}
-          </Button>
-          {canCrossChainRebalance && (
-            <Button
-              variant="contained"
-              color="info"
-              size="large"
-              onClick={() => crossChainRebalanceMutation.mutate()}
-              disabled={rebalanceMutation.isPending || crossChainRebalanceMutation.isPending || !usdcToken}
-              startIcon={crossChainRebalanceMutation.isPending ? <CircularProgress size={20} /> : undefined}
-              sx={{ minWidth: 200 }}
-            >
-              {crossChainRebalanceMutation.isPending ? 'Cross-Chain Rebalancing...' : 'Cross-Chain Rebalance'}
-            </Button>
+          {!hasUnhealthyPositions && positions && positions.length > 0 && (
+            <Alert severity="success" sx={{ mt: 3 }}>
+              ✅ All positions are healthy! No rebalancing needed.
+            </Alert>
           )}
         </Box>
       )}
 
-      {!hasUnhealthyPositions && positions && positions.length > 0 && (
-        <Alert severity="success" sx={{ mt: 3 }}>
-          All positions are healthy! No rebalancing needed.
-        </Alert>
+      {activeTab === 1 && (
+        <Box>
+          <RebalanceHistory history={rebalanceHistory} />
+        </Box>
       )}
     </Box>
   )
 }
-

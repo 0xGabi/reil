@@ -5,15 +5,14 @@ import { http } from 'viem'
 
 import { getMultiChainConfig } from '@eil-protocol/sdk'
 
-import AaveDeployment from '../../deployment/aave.json'
 
 const projectId = 'a3c307b5f67aec880eea6812706d67c7'
 
 /**
  * Helper function to get chain deployment by chain ID.
  */
-export function getDeploymentChains (): [number, number] {
-  return [AaveDeployment[0].chainId, AaveDeployment[1].chainId]
+export function getDeploymentChains (): [number, number, number, number] {
+  return [1, 10, 42161, 8453]
 }
 
 // Helper function to map chain ID to AppKit network
@@ -23,29 +22,28 @@ function getAppKitNetworkByChainId(chainId: number): AppKitNetwork {
     case 10: return optimism
     case 8453: return base
     case 42161: return arbitrum
-    case 11155111: return sepolia
-    case 421614: return arbitrumSepolia
-    case 84532: return baseSepolia
-    case 11155420: return optimismSepolia
     default:
       throw new Error(`Unsupported chain ID: ${chainId}`)
   }
 }
-
 // Get the deployment info for both chains
-const [chainId0, chainId1] = getDeploymentChains()
+const [chainId0, chainId1, chainId2, chainId3] = getDeploymentChains()
 
-// Get the corresponding AppKit networks
 const network0 = getAppKitNetworkByChainId(chainId0)
 const network1 = getAppKitNetworkByChainId(chainId1)
+const network2 = getAppKitNetworkByChainId(chainId2)
+const network3 = getAppKitNetworkByChainId(chainId3)
+
 
 // Create the networks array with all supported networks but prioritize the deployment chains
 const appNetworks: [AppKitNetwork, ...AppKitNetwork[]] = [
   network0,
   network1,
+  network2,
+  network3,
   // Include other common networks
   ...[mainnet, base, arbitrum, optimism, sepolia, arbitrumSepolia, baseSepolia, optimismSepolia]
-    .filter(net => net.id !== network0.id && net.id !== network1.id)
+    .filter(net => net.id !== network0.id && net.id !== network1.id && net.id !== network2.id && net.id !== network3.id)
 ] as [AppKitNetwork, ...AppKitNetwork[]]
 
 // Build transports dynamically
@@ -53,11 +51,14 @@ const transports: Record<number, ReturnType<typeof http>> = {}
 
 const chainConfig = getMultiChainConfig()
 console.log('chainConfig:', chainConfig)
-const net1 = chainConfig.find(c=> Number(c.chainId) === chainId0)!
-const net2 = chainConfig.find(c=> Number(c.chainId) === chainId1)!
+const net1 = chainConfig.find(c => Number(c.chainId) === chainId0)!
+const net2 = chainConfig.find(c => Number(c.chainId) === chainId1)!
+const net3 = chainConfig.find(c => Number(c.chainId) === chainId2)!
+const net4 = chainConfig.find(c => Number(c.chainId) === chainId3)!
 transports[Number(net1.chainId)] = http(net1.publicClient.transport.url)
 transports[Number(net2.chainId)] = http(net2.publicClient.transport.url)
-
+transports[Number(net3.chainId)] = http(net3.publicClient.transport.url)
+transports[Number(net4.chainId)] = http(net4.publicClient.transport.url)
 // Add default transports for other common networks
 const defaultNetworks = [mainnet, arbitrum, base, optimism, sepolia, arbitrumSepolia, baseSepolia, optimismSepolia]
 defaultNetworks.forEach(network => {
