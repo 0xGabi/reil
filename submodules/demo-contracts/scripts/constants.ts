@@ -26,6 +26,28 @@ export const USDC_ADDRESSES: Record<number, Address> = {
 }
 
 /**
+ * WETH token addresses per chain
+ */
+export const WETH_ADDRESSES: Record<number, Address> = {
+  1: '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2', // Mainnet
+  10: '0x4200000000000000000000000000000000000006', // Optimism
+  42161: '0x82aF49447D8a07e3bd95BD0d56f35241523fBab1', // Arbitrum
+  8453: '0x4200000000000000000000000000000000000006', // Base
+  11155111: '0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14', // Sepolia
+  421614: '0x980B62Da83eFf3D4576C647993b0c1D7faf17c73', // Arbitrum Sepolia
+  84532: '0x4200000000000000000000000000000000000006', // Base Sepolia
+  11155420: '0x4200000000000000000000000000000000000006', // Optimism Sepolia
+}
+
+/**
+ * Token symbol to address mapping
+ */
+export const TOKEN_ADDRESSES: Record<string, Record<number, Address>> = {
+  USDC: USDC_ADDRESSES,
+  WETH: WETH_ADDRESSES,
+}
+
+/**
  * Aave Pool ABI (minimal needed functions)
  */
 export const AAVE_POOL_ABI = [
@@ -101,6 +123,41 @@ export const AAVE_POOL_ABI = [
     stateMutability: 'view',
     type: 'function',
   },
+  {
+    inputs: [{ internalType: 'address', name: 'asset', type: 'address' }],
+    name: 'getReserveData',
+    outputs: [
+      {
+        components: [
+          {
+            components: [{ internalType: 'uint256', name: 'data', type: 'uint256' }],
+            internalType: 'struct DataTypes.ReserveConfigurationMap',
+            name: 'configuration',
+            type: 'tuple',
+          },
+          { internalType: 'uint128', name: 'liquidityIndex', type: 'uint128' },
+          { internalType: 'uint128', name: 'currentLiquidityRate', type: 'uint128' },
+          { internalType: 'uint128', name: 'variableBorrowIndex', type: 'uint128' },
+          { internalType: 'uint128', name: 'currentVariableBorrowRate', type: 'uint128' },
+          { internalType: 'uint128', name: 'currentStableBorrowRate', type: 'uint128' },
+          { internalType: 'uint40', name: 'lastUpdateTimestamp', type: 'uint40' },
+          { internalType: 'uint16', name: 'id', type: 'uint16' },
+          { internalType: 'address', name: 'aTokenAddress', type: 'address' },
+          { internalType: 'address', name: 'stableDebtTokenAddress', type: 'address' },
+          { internalType: 'address', name: 'variableDebtTokenAddress', type: 'address' },
+          { internalType: 'address', name: 'interestRateStrategyAddress', type: 'address' },
+          { internalType: 'uint128', name: 'accruedToTreasury', type: 'uint128' },
+          { internalType: 'uint128', name: 'unbacked', type: 'uint128' },
+          { internalType: 'uint128', name: 'isolationModeTotalDebt', type: 'uint128' },
+        ],
+        internalType: 'struct DataTypes.ReserveData',
+        name: '',
+        type: 'tuple',
+      },
+    ],
+    stateMutability: 'view',
+    type: 'function',
+  },
 ] as const
 
 /**
@@ -142,6 +199,26 @@ export const TEST_TOKEN_MINT_ABI = [
     outputs: [],
     stateMutability: 'nonpayable',
     type: 'function',
+  },
+] as const
+
+/**
+ * WETH ABI (for wrapping/unwrapping ETH)
+ */
+export const WETH_ABI = [
+  {
+    name: 'deposit',
+    type: 'function',
+    stateMutability: 'payable',
+    inputs: [],
+    outputs: [],
+  },
+  {
+    name: 'withdraw',
+    type: 'function',
+    stateMutability: 'nonpayable',
+    inputs: [{ name: 'wad', type: 'uint256' }],
+    outputs: [],
   },
 ] as const
 

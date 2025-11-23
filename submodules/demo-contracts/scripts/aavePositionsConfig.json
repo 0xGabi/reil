@@ -1,21 +1,36 @@
 {
   "chains": [
     {
+      "chainId": 1,
+      "name": "Mainnet",
+      "supplyAmount": "1",
+      "borrowAmount": "1000",
+      "collateralToken": "WETH",
+      "borrowToken": "USDC"
+    },
+    {
+      "chainId": 10,
+      "name": "Optimism",
+      "supplyAmount": "1",
+      "borrowAmount": "2000",
+      "collateralToken": "WETH",
+      "borrowToken": "USDC"    
+    },
+    {
       "chainId": 42161,
       "name": "Arbitrum",
-      "supplyAmount": "500",
-      "borrowAmount": "100",
-      "collateralToken": "",
-      "borrowToken": ""
+      "supplyAmount": "2",
+      "borrowAmount": "200",
+      "collateralToken": "WETH",
+      "borrowToken": "USDC"
     },
     {
       "chainId": 8453,
       "name": "Base",
-      "supplyAmount": "200",
-      "borrowAmount": "140",
-      "collateralToken": "",
-      "borrowToken": ""
+      "supplyAmount": "1",
+      "borrowAmount": "2000",
+      "collateralToken": "WETH",
+      "borrowToken": "USDC"
     }
   ]
 }
-

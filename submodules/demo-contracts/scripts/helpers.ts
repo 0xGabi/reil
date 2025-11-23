@@ -1,6 +1,6 @@
 import { network } from 'hardhat'
 import { Address, type PublicClient, type WalletClient } from 'viem'
-import { AAVE_POOL_ADDRESSES, USDC_ADDRESSES } from './constants.js'
+import { AAVE_POOL_ADDRESSES, USDC_ADDRESSES, TOKEN_ADDRESSES } from './constants.js'
 
 /**
  * Get network clients using Hardhat's viem helpers
@@ -67,6 +67,21 @@ export function getUsdcAddress(chainId: number): Address {
   const address = USDC_ADDRESSES[chainId]
   if (!address) {
     throw new Error(`USDC token address not found for chain ${chainId}`)
+  }
+  return address
+}
+
+/**
+ * Get token address by symbol for a given chain ID
+ */
+export function getTokenAddress(symbol: string, chainId: number): Address {
+  const tokenAddresses = TOKEN_ADDRESSES[symbol.toUpperCase()]
+  if (!tokenAddresses) {
+    throw new Error(`Token symbol "${symbol}" not supported. Supported: ${Object.keys(TOKEN_ADDRESSES).join(', ')}`)
+  }
+  const address = tokenAddresses[chainId]
+  if (!address) {
+    throw new Error(`${symbol} token address not found for chain ${chainId}`)
   }
   return address
 }
