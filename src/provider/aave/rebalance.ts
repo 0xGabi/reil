@@ -13,6 +13,7 @@ import {
 
 import { AAVE_POOL_ABI, getAavePoolAddress } from '../../utils/constants.ts'
 import { wagmiConfig } from '../wagmiConfig.ts'
+import { USEROP_OVERRIDE } from './constants.ts'
 import { type AavePosition } from './types.ts'
 import { isPositionUnhealthy } from './healthFactor.ts'
 import { getATokenBalance, convertUSDBaseToTokenAmount } from './utils.ts'
@@ -139,6 +140,8 @@ export async function crossChainRebalanceAavePositions(
   }
 
   // Group voucher requests by source chain
+  // Due to SDK limitation: only ONE voucher per source->destination pair
+  // Workaround: Chain vouchers - send full amount to first destination, then chain to next destinations
   const withdrawalsByChain = new Map<number, bigint>()
   const vouchersBySourceChain = new Map<number, Array<{ destChainId: number; amount: bigint }>>()
 
@@ -167,7 +170,8 @@ export async function crossChainRebalanceAavePositions(
     return batch
   }
 
-  // Create one batch per source chain with multiple voucher requests
+  // Step 1: Create batches for source chains - send FULL withdrawal amount to FIRST destination only
+  // Due to SDK limitation, we can only send one voucher per source chain
   for (const [sourceChainId, withdrawAmountUSD] of withdrawalsByChain.entries()) {
     const position = healthyPositions.find((p) => p.chainId === sourceChainId)
     if (!position) continue
@@ -228,115 +232,195 @@ export async function crossChainRebalanceAavePositions(
       })
     )
 
-    // Create voucher requests for each destination chain
-    // Each voucher request has a unique ref
+    // Due to SDK limitation: only ONE voucher per source chain
+    // Send FULL withdrawal amount to FIRST destination only
     const vouchers = vouchersBySourceChain.get(sourceChainId) || []
     
     if (vouchers.length === 0) {
       // No vouchers to create, but batch already has withdraw action
+      batch.overrideUserOp(USEROP_OVERRIDE).endBatch()
       continue
     }
 
-    // Convert voucher amounts from USD base to token amounts and distribute proportionally
-    const voucherAmountsInTokens: Array<{ destChainId: number; amount: bigint }> = []
-    let totalVoucherTokens = 0n
+    // Sort destinations by priority (worst health factor first)
+    const sortedVouchers = [...vouchers].sort((a, b) => {
+      const posA = unhealthyPositions.find(p => p.chainId === a.destChainId)
+      const posB = unhealthyPositions.find(p => p.chainId === b.destChainId)
+      if (!posA) return 1
+      if (!posB) return -1
+      if (posA.healthFactor === 0n) return -1
+      if (posB.healthFactor === 0n) return 1
+      return posA.healthFactor < posB.healthFactor ? -1 : 1
+    })
+
+    // Send FULL withdrawal amount to FIRST destination
+    const firstDestination = sortedVouchers[0]
+    const voucherRef = `voucher_${sourceChainId}_to_${firstDestination.destChainId}`
     
-    for (const voucher of vouchers) {
-      const voucherAmountTokens = await convertUSDBaseToTokenAmount(
-        voucher.amount,
-        sourceChainId,
+    batch.addVoucherRequest({
+      ref: voucherRef,
+      destinationChainId: BigInt(firstDestination.destChainId),
+      tokens: [{ token: collateralToken, amount: actualWithdrawAmount }],
+    })
+    
+    // Track the full amount going to first destination (will be chained from there)
+    voucherAmountsByDestination.set(firstDestination.destChainId, actualWithdrawAmount)
+    voucherRefsByDestination.set(firstDestination.destChainId, [voucherRef])
+
+    batch.overrideUserOp(USEROP_OVERRIDE).endBatch()
+  }
+
+  // Step 2: Build chain order for each source
+  // Map: sourceChainId -> [firstDest, secondDest, thirdDest, ...]
+  const chainOrderBySource = new Map<number, number[]>()
+  for (const [sourceChainId, vouchers] of vouchersBySourceChain.entries()) {
+    const sortedVouchers = [...vouchers].sort((a, b) => {
+      const posA = unhealthyPositions.find(p => p.chainId === a.destChainId)
+      const posB = unhealthyPositions.find(p => p.chainId === b.destChainId)
+      if (!posA) return 1
+      if (!posB) return -1
+      if (posA.healthFactor === 0n) return -1
+      if (posB.healthFactor === 0n) return 1
+      return posA.healthFactor < posB.healthFactor ? -1 : 1
+    })
+    chainOrderBySource.set(sourceChainId, sortedVouchers.map(v => v.destChainId))
+  }
+
+  // Step 3: Process destination chains in chain order
+  // For each destination: use voucher, supply what's needed, forward remainder to next destination
+  const processedDestinations = new Set<number>()
+  const needsByDestination = new Map(optimalSupplies)
+
+  // Process destinations in the order they appear in chains
+  for (const [sourceChainId, chainOrder] of chainOrderBySource.entries()) {
+    if (chainOrder.length === 0) continue
+
+    const sourcePosition = healthyPositions.find(p => p.chainId === sourceChainId)
+    if (!sourcePosition) continue
+
+    const sourcePoolAddress = getAavePoolAddress(sourceChainId)
+    const sourceCollateralTokenAddress = collateralToken.addressOn(BigInt(sourceChainId))
+    if (!sourcePoolAddress || !sourceCollateralTokenAddress) continue
+
+    const sourceClient = getClient(wagmiConfig, { chainId: sourceChainId })
+    if (!sourceClient) continue
+
+    const sourceTokenDecimals = await readContract(sourceClient, {
+      address: sourceCollateralTokenAddress,
+      abi: erc20Abi,
+      functionName: 'decimals',
+    }) as number
+
+    // Get the full withdrawal amount in tokens
+    const sourceWithdrawAmountUSD = withdrawalsByChain.get(sourceChainId) || 0n
+    const sourceWithdrawAmountTokens = await convertUSDBaseToTokenAmount(
+      sourceWithdrawAmountUSD,
+      sourceChainId,
+      sourceCollateralTokenAddress,
+      sourceTokenDecimals
+    )
+
+    // Process each destination in the chain
+    let remainingAmount = sourceWithdrawAmountTokens
+
+    for (let i = 0; i < chainOrder.length; i++) {
+      const destChainId = chainOrder[i]
+      if (processedDestinations.has(destChainId)) continue
+
+      const position = unhealthyPositions.find((p) => p.chainId === destChainId)
+      if (!position) continue
+
+      const poolAddress = getAavePoolAddress(destChainId)
+      const collateralTokenAddress = collateralToken.addressOn(BigInt(destChainId))
+      if (!poolAddress || !collateralTokenAddress) continue
+
+      const batch = getOrCreateBatch(destChainId)
+      const userAddress = position.userAddress
+
+      // Get token decimals for destination chain
+      const client = getClient(wagmiConfig, { chainId: destChainId })
+      if (!client) continue
+
+      const tokenDecimals = await readContract(client, {
+        address: collateralTokenAddress,
+        abi: erc20Abi,
+        functionName: 'decimals',
+      }) as number
+
+      // Calculate how much this destination needs (in token units)
+      const neededUSD = needsByDestination.get(destChainId) || 0n
+      const neededTokens = await convertUSDBaseToTokenAmount(
+        neededUSD,
+        destChainId,
         collateralTokenAddress,
         tokenDecimals
       )
-      voucherAmountsInTokens.push({ destChainId: voucher.destChainId, amount: voucherAmountTokens })
-      totalVoucherTokens += voucherAmountTokens
-    }
-    
-    // Distribute actual withdrawal amount proportionally to avoid rounding issues
-    let remainingWithdrawAmount = actualWithdrawAmount
-    
-    for (let i = 0; i < voucherAmountsInTokens.length; i++) {
-      const voucher = voucherAmountsInTokens[i]
-      let voucherAmount: bigint
-      
-      if (i === voucherAmountsInTokens.length - 1) {
-        // Last voucher gets remaining amount to ensure exact match
-        voucherAmount = remainingWithdrawAmount
-      } else if (totalVoucherTokens > 0n) {
-        // Proportional distribution: (voucherAmount / totalVoucherTokens) * actualWithdrawAmount
-        voucherAmount = (voucher.amount * actualWithdrawAmount) / totalVoucherTokens
+
+      // Use vouchers for this destination
+      // - If first destination (i === 0): use voucher from source chain
+      // - If subsequent destination (i > 0): use voucher from previous destination in chain
+      if (i === 0) {
+        // First destination: use voucher from source chain
+        const voucherRefs = voucherRefsByDestination.get(destChainId) || []
+        for (const voucherRef of voucherRefs) {
+          batch.useVoucher(voucherRef)
+        }
       } else {
-        voucherAmount = 0n
+        // Subsequent destination: use voucher from previous destination
+        const prevDestChainId = chainOrder[i - 1]
+        const prevVoucherRef = `voucher_${prevDestChainId}_to_${destChainId}`
+        batch.useVoucher(prevVoucherRef)
       }
-      
-      // Ensure we don't exceed remaining amount
-      voucherAmount = voucherAmount > remainingWithdrawAmount ? remainingWithdrawAmount : voucherAmount
-      
-      if (voucherAmount > 0n) {
-        // Create voucher request with unique ref for this source->destination pair
-        const voucherRef = `voucher_${sourceChainId}_to_${voucher.destChainId}`
+
+      // Calculate how much to supply (min of needed and available)
+      const supplyAmount = remainingAmount < neededTokens ? remainingAmount : neededTokens
+      const remainder = remainingAmount - supplyAmount
+
+      if (supplyAmount > 0n) {
+        // Approve Aave pool to spend collateral token
+        batch.addAction(
+          new ApproveAction({
+            token: collateralToken,
+            spender: poolAddress as Address,
+            value: supplyAmount,
+          })
+        )
+
+        // Supply collateral to Aave
+        batch.addAction(
+          new FunctionCallAction({
+            target: poolAddress as Address,
+            functionName: 'supply',
+            args: [collateralTokenAddress, supplyAmount, userAddress, 0],
+            abi: AAVE_POOL_ABI,
+            value: 0n,
+          })
+        )
+
+        // Note: We don't need to update needsByDestination since we're processing destinations
+        // in order and forwarding remainders. Each destination gets what it can from the chain.
+      }
+
+      // If there's a remainder and more destinations in the chain, create voucher to next destination
+      if (remainder > 0n && i < chainOrder.length - 1) {
+        const nextDestChainId = chainOrder[i + 1]
+        const nextVoucherRef = `voucher_${destChainId}_to_${nextDestChainId}`
+        
         batch.addVoucherRequest({
-          ref: voucherRef,
-          destinationChainId: BigInt(voucher.destChainId),
-          tokens: [{ token: collateralToken, amount: voucherAmount }],
+          ref: nextVoucherRef,
+          destinationChainId: BigInt(nextDestChainId),
+          tokens: [{ token: collateralToken, amount: remainder }],
         })
-        
-        // Track voucher amounts in token units for supply step
-        const current = voucherAmountsByDestination.get(voucher.destChainId) || 0n
-        voucherAmountsByDestination.set(voucher.destChainId, current + voucherAmount)
-        
-        // Track voucher refs by destination for useVoucher calls
-        const refs = voucherRefsByDestination.get(voucher.destChainId) || []
-        refs.push(voucherRef)
-        voucherRefsByDestination.set(voucher.destChainId, refs)
-        
-        remainingWithdrawAmount -= voucherAmount
+
+        // Track voucher for next destination
+        const nextRefs = voucherRefsByDestination.get(nextDestChainId) || []
+        nextRefs.push(nextVoucherRef)
+        voucherRefsByDestination.set(nextDestChainId, nextRefs)
       }
-    }
-  }
 
-  // Step 2: Use vouchers and supply collateral on destination chains
-  // Use specific voucher refs instead of useAllVouchers()
-  const suppliesByChain = new Map(voucherAmountsByDestination)
-
-  for (const [destChainId, supplyAmountTokens] of suppliesByChain.entries()) {
-    const position = unhealthyPositions.find((p) => p.chainId === destChainId)
-    if (!position) continue
-
-    const poolAddress = getAavePoolAddress(destChainId)
-    const collateralTokenAddress = collateralToken.addressOn(BigInt(destChainId))
-    if (!poolAddress || !collateralTokenAddress) continue
-
-    // Get or create batch for this destination chain (prevents duplicate batches)
-    const batch = getOrCreateBatch(destChainId)
-    const userAddress = position.userAddress
-
-    // Use specific vouchers by ref (one useVoucher call per voucher ref)
-    const voucherRefs = voucherRefsByDestination.get(destChainId) || []
-    for (const voucherRef of voucherRefs) {
-      batch.useVoucher(voucherRef)
-    }
-
-    if (supplyAmountTokens > 0n) {
-      // Approve Aave pool to spend collateral token
-      batch.addAction(
-        new ApproveAction({
-          token: collateralToken,
-          spender: poolAddress as Address,
-          value: supplyAmountTokens,
-        })
-      )
-
-      // Supply collateral to Aave (amount is now in token units)
-      batch.addAction(
-        new FunctionCallAction({
-          target: poolAddress as Address,
-          functionName: 'supply',
-          args: [collateralTokenAddress, supplyAmountTokens, userAddress, 0],
-          abi: AAVE_POOL_ABI,
-          value: 0n,
-        })
-      )
+      remainingAmount = remainder
+      processedDestinations.add(destChainId)
+      batch.overrideUserOp(USEROP_OVERRIDE).endBatch()
     }
   }
 

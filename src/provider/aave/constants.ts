@@ -29,5 +29,6 @@ export const AAVE_ORACLE_ABI = [
 export const USEROP_OVERRIDE = {
   maxFeePerGas: 1000000000n,
   maxPriorityFeePerGas: 10n,
+  // nonce: BigInt(Math.floor(Math.random() * 1000000)) << 64n,
 } as const
 
