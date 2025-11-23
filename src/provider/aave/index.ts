@@ -14,7 +14,6 @@ export {
 
 // Rebalancing functions
 export {
-  rebalanceAavePositions,
   crossChainRebalanceAavePositions,
 } from './rebalance.ts'
 

@@ -15,6 +15,7 @@ import {
   Tooltip,
 } from '@mui/material'
 import { type JSX } from 'react'
+import { getChainName, getChainColor } from '../config/networks.ts'
 
 export interface RebalanceRecord {
   id: string
@@ -29,20 +30,6 @@ interface RebalanceHistoryProps {
   history: RebalanceRecord[]
 }
 
-const CHAIN_NAMES: Record<number, string> = {
-  1: 'Ethereum',
-  10: 'Optimism',
-  42161: 'Arbitrum',
-  8453: 'Base',
-}
-
-const CHAIN_COLORS: Record<number, string> = {
-  1: '#627EEA',
-  10: '#FF0420',
-  42161: '#28A0F0',
-  8453: '#0052FF',
-}
-
 export function RebalanceHistory({ history }: RebalanceHistoryProps): JSX.Element {
   const formatDate = (timestamp: number): string => {
     const date = new Date(timestamp)
@@ -55,12 +42,12 @@ export function RebalanceHistory({ history }: RebalanceHistoryProps): JSX.Elemen
         sx={{
           width: 24,
           height: 24,
-          bgcolor: CHAIN_COLORS[chainId] || '#666',
+          bgcolor: getChainColor(chainId),
           fontSize: '0.75rem',
           fontWeight: 'bold',
         }}
       >
-        {CHAIN_NAMES[chainId]?.[0] || '?'}
+        {getChainName(chainId)[0] || '?'}
       </Avatar>
     )
   }
@@ -115,7 +102,7 @@ export function RebalanceHistory({ history }: RebalanceHistoryProps): JSX.Elemen
                   <TableCell>
                     <Box sx={{ display: 'flex', gap: 0.5, alignItems: 'center', flexWrap: 'wrap' }}>
                       {record.chains.map((chainId) => (
-                        <Tooltip key={chainId} title={CHAIN_NAMES[chainId] || `Chain ${chainId}`}>
+                        <Tooltip key={chainId} title={getChainName(chainId)}>
                           <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
                             {getChainAvatar(chainId)}
                           </Box>

@@ -22,11 +22,10 @@ import {
   type AavePosition,
   fetchAavePositions,
   isPositionUnhealthy,
-  rebalanceAavePositions,
   crossChainRebalanceAavePositions,
   createEilSdk,
 } from '../provider/aave/index.ts'
-import { getDeploymentChains } from '../provider/wagmiConfig.ts'
+import { getDeploymentChains } from '../config/networks.ts'
 import { ChainNetwork } from './ChainNetwork.tsx'
 import { RebalanceHistory, type RebalanceRecord } from './RebalanceHistory.tsx'
 
@@ -81,8 +80,7 @@ export function AavePositions(): JSX.Element {
   const [activeTab, setActiveTab] = useState(0)
 
   const queryClient = useQueryClient()
-  const [chainId0, chainId1, chainId2, chainId3] = getDeploymentChains()
-  const chainIds: [number, number, number, number] = [chainId0, chainId1, chainId2, chainId3]
+  const chainIds = getDeploymentChains()
 
   // Construct MultichainToken instances
   const usdcToken: MultichainToken | undefined = sdk?.createToken('USDC', DeployedTokensFile.USDC)
@@ -91,10 +89,7 @@ export function AavePositions(): JSX.Element {
   const { data: positions, isFetching: isFetchingPositions, error: positionsError } = useQuery({
     queryKey: [
       'aavePositions',
-      sdkAccount?.addressOn(BigInt(chainId0)),
-      sdkAccount?.addressOn(BigInt(chainId1)),
-      sdkAccount?.addressOn(BigInt(chainId2)),
-      sdkAccount?.addressOn(BigInt(chainId3)),
+      ...chainIds.map(chainId => sdkAccount?.addressOn(BigInt(chainId))),
     ],
     enabled: !!sdkAccount,
     refetchInterval: () => {
@@ -106,7 +101,7 @@ export function AavePositions(): JSX.Element {
     queryFn: async (): Promise<AavePosition[]> => {
       if (!sdkAccount) return []
       try {
-        return await fetchAavePositions([chainId0, chainId1, chainId2, chainId3], sdkAccount)
+        return await fetchAavePositions(chainIds, sdkAccount)
       } catch (e) {
         console.error(e)
         return []
@@ -165,47 +160,6 @@ export function AavePositions(): JSX.Element {
       queryClient.invalidateQueries({ queryKey: ['aavePositions'] }).then()
     }
   }
-
-  // Rebalance mutation (single-chain)
-  const rebalanceMutation = useMutation({
-    mutationFn: async () => {
-      if (!sdk || !sdkAccount || !positions || !usdcToken) {
-        throw new Error('SDK, account, positions, or tokens not available')
-      }
-
-      const unhealthyChains = positions
-        .filter((pos) => isPositionUnhealthy(pos, HEALTH_FACTOR_THRESHOLD))
-        .map((pos) => pos.chainId)
-
-      // Add pending record
-      const pendingRecord = addRebalanceRecord('single-chain', unhealthyChains, 'pending')
-      updateRebalanceHistory(pendingRecord)
-
-      try {
-        await rebalanceAavePositions(sdk, sdkAccount, positions, usdcToken, usdcToken, callback)
-        // Update to success
-        const successRecord = { ...pendingRecord, status: 'success' as const }
-        updateRebalanceHistory(successRecord)
-      } catch (error) {
-        // Update to failed
-        const failedRecord = {
-          ...pendingRecord,
-          status: 'failed' as const,
-          details: error instanceof Error ? error.message : 'Unknown error',
-        }
-        updateRebalanceHistory(failedRecord)
-        throw error
-      }
-    },
-    onSuccess: () => {
-      enqueueSnackbar('Rebalancing successful!', { variant: 'success' })
-      queryClient.invalidateQueries({ queryKey: ['aavePositions'] })
-    },
-    onError: (err: any) => {
-      console.error(err)
-      enqueueSnackbar(err?.message ?? 'Rebalancing failed', { variant: 'error' })
-    },
-  })
 
   // Cross-chain rebalance mutation
   const crossChainRebalanceMutation = useMutation({
@@ -337,7 +291,7 @@ export function AavePositions(): JSX.Element {
           {hasUnhealthyPositions && (
             <Alert severity="warning" sx={{ mb: 3 }}>
               <Typography variant="body1" fontWeight="bold">
-                ⚠️ Warning: {unhealthyPositions.length} position(s) have unhealthy health factors
+                ⚠️ Warning: {unhealthyPositions.length} position(s) have unhealthy health factor
               </Typography>
               <Typography variant="body2" sx={{ mt: 1 }}>
                 Consider rebalancing to improve your position health and avoid liquidation risk.
@@ -365,28 +319,13 @@ export function AavePositions(): JSX.Element {
               Rebalancing Actions
             </Typography>
             <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} sx={{ mt: 2 }}>
-              {hasUnhealthyPositions && (
-                <Button
-                  variant="contained"
-                  color="warning"
-                  size="large"
-                  onClick={() => rebalanceMutation.mutate()}
-                  disabled={rebalanceMutation.isPending || crossChainRebalanceMutation.isPending || !usdcToken}
-                  startIcon={rebalanceMutation.isPending ? <CircularProgress size={20} /> : undefined}
-                  sx={{ minWidth: 250, py: 1.5 }}
-                >
-                  {rebalanceMutation.isPending
-                    ? 'Rebalancing...'
-                    : 'Rebalance (Single-Chain)'}
-                </Button>
-              )}
               {canCrossChainRebalance && (
                 <Button
                   variant="contained"
                   color="primary"
                   size="large"
                   onClick={() => crossChainRebalanceMutation.mutate()}
-                  disabled={rebalanceMutation.isPending || crossChainRebalanceMutation.isPending || !usdcToken}
+                  disabled={crossChainRebalanceMutation.isPending || !usdcToken}
                   startIcon={crossChainRebalanceMutation.isPending ? <CircularProgress size={20} /> : undefined}
                   sx={{ minWidth: 250, py: 1.5 }}
                 >

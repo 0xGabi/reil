@@ -13,137 +13,11 @@ import {
 
 import { AAVE_POOL_ABI, getAavePoolAddress } from '../../utils/constants.ts'
 import { wagmiConfig } from '../wagmiConfig.ts'
-import { USEROP_OVERRIDE } from './constants.ts'
 import { type AavePosition } from './types.ts'
-import { isPositionUnhealthy, calculateRepayAmount } from './healthFactor.ts'
+import { isPositionUnhealthy } from './healthFactor.ts'
 import { getATokenBalance, convertUSDBaseToTokenAmount } from './utils.ts'
 import { optimizeRebalanceDistribution } from './optimization.ts'
 
-/**
- * Rebalance unhealthy Aave positions using a single UserOperation
- */
-export async function rebalanceAavePositions(
-  sdk: CrossChainSdk,
-  account: IMultiChainSmartAccount,
-  positions: AavePosition[],
-  collateralToken: MultichainToken,
-  debtToken: MultichainToken,
-  callback: ExecCallback
-): Promise<void> {
-  const unhealthyPositions = positions.filter((pos) =>
-    isPositionUnhealthy(pos)
-  )
-
-  if (unhealthyPositions.length === 0) {
-    throw new Error('No unhealthy positions to rebalance')
-  }
-
-  const builder = sdk.createBuilder()
-
-  // Group positions by chain
-  const positionsByChain = new Map<number, AavePosition[]>()
-  unhealthyPositions.forEach((pos) => {
-    const chainPositions = positionsByChain.get(pos.chainId) || []
-    chainPositions.push(pos)
-    positionsByChain.set(pos.chainId, chainPositions)
-  })
-
-  // Create batches for each chain with unhealthy positions
-  for (const [chainId, chainPositions] of positionsByChain.entries()) {
-    const batch = builder.startBatch(BigInt(chainId))
-    const userAddress = chainPositions[0].userAddress
-
-    for (const position of chainPositions) {
-      // Calculate repay amount to reach healthy health factor
-      const repayAmount = calculateRepayAmount(position)
-
-      if (repayAmount > 0n) {
-        // Get user's balance of the debt token
-        const client = getClient(wagmiConfig, { chainId: position.chainId })
-        if (!client) continue
-
-        const debtTokenAddress = debtToken.addressOn(BigInt(position.chainId))
-        if (!debtTokenAddress) continue
-
-        const poolAddress = getAavePoolAddress(position.chainId)
-        if (!poolAddress) continue
-
-        // Approve Aave pool to spend debt token
-        batch.addAction(
-          new ApproveAction({
-            token: debtToken,
-            spender: poolAddress as Address,
-            value: repayAmount,
-          })
-        )
-
-        // Repay debt (interest rate mode: 2 = variable)
-        batch.addAction(
-          new FunctionCallAction({
-            target: poolAddress as Address,
-            functionName: 'repay',
-            args: [debtTokenAddress, repayAmount, 2n, userAddress],
-            abi: AAVE_POOL_ABI,
-            value: 0n,
-          })
-        )
-      }
-
-      // If we still need to improve health factor, supply more collateral
-      const newHealthFactor = position.healthFactor
-      if (newHealthFactor < parseUnits('1.5', 18) && position.totalDebtBase > 0n) {
-        // Calculate additional collateral needed
-        const targetHealthFactor = parseUnits('2.0', 18)
-        const currentCollateral = position.totalCollateralBase
-        const currentDebt = position.totalDebtBase
-        const liquidationThreshold = position.currentLiquidationThreshold
-
-        // targetHealthFactor = (newCollateral * liquidationThreshold) / debt
-        // newCollateral = (targetHealthFactor * debt) / liquidationThreshold
-        const targetCollateral =
-          (targetHealthFactor * currentDebt) / liquidationThreshold
-        const additionalCollateral = targetCollateral > currentCollateral
-          ? targetCollateral - currentCollateral
-          : 0n
-
-        if (additionalCollateral > 0n) {
-          const collateralTokenAddress = collateralToken.addressOn(
-            BigInt(position.chainId)
-          )
-          const poolAddress = getAavePoolAddress(position.chainId)
-
-          if (collateralTokenAddress && poolAddress) {
-            // Approve Aave pool to spend collateral token
-            batch.addAction(
-              new ApproveAction({
-                token: collateralToken,
-                spender: poolAddress as Address,
-                value: additionalCollateral,
-              })
-            )
-
-            // Supply collateral using direct function call
-            batch.addAction(
-              new FunctionCallAction({
-                target: poolAddress as Address,
-                functionName: 'supply',
-                args: [collateralTokenAddress, additionalCollateral, userAddress, 0],
-                abi: AAVE_POOL_ABI,
-                value: 0n,
-              })
-            )
-          }
-        }
-      }
-    }
-
-    batch.overrideUserOp(USEROP_OVERRIDE).endBatch()
-  }
-
-  builder.useAccount(account)
-  const executor = await builder.buildAndSign()
-  await executor.execute(callback)
-}
 
 /**
  * Cross-chain rebalance Aave positions by:
@@ -264,7 +138,7 @@ export async function crossChainRebalanceAavePositions(
     remainingSupplies.set(position.chainId, remainingNeed)
   }
 
-  // Group withdrawals and voucher requests by source chain
+  // Group voucher requests by source chain
   const withdrawalsByChain = new Map<number, bigint>()
   const vouchersBySourceChain = new Map<number, Array<{ destChainId: number; amount: bigint }>>()
 
@@ -279,8 +153,21 @@ export async function crossChainRebalanceAavePositions(
 
   // Track actual voucher amounts in token units (for supply step)
   const voucherAmountsByDestination = new Map<number, bigint>()
+  // Track voucher refs by destination chain (for useVoucher calls)
+  const voucherRefsByDestination = new Map<number, string[]>()
+  // Track batches by chainId to prevent duplicate batch creation (like stitchSDK does)
+  const batchesByChain = new Map<number, ReturnType<typeof builder.startBatch>>()
 
-  // Create batches for withdrawing collateral and requesting vouchers
+  // Helper function to get or create batch (similar to stitchSDK's findOrCreateBatch)
+  const getOrCreateBatch = (chainId: number) => {
+    const existing = batchesByChain.get(chainId)
+    if (existing) return existing
+    const batch = builder.startBatch(BigInt(chainId))
+    batchesByChain.set(chainId, batch)
+    return batch
+  }
+
+  // Create one batch per source chain with multiple voucher requests
   for (const [sourceChainId, withdrawAmountUSD] of withdrawalsByChain.entries()) {
     const position = healthyPositions.find((p) => p.chainId === sourceChainId)
     if (!position) continue
@@ -289,7 +176,8 @@ export async function crossChainRebalanceAavePositions(
     const collateralTokenAddress = collateralToken.addressOn(BigInt(sourceChainId))
     if (!poolAddress || !collateralTokenAddress) continue
 
-    const batch = builder.startBatch(BigInt(sourceChainId))
+    // Get or create batch for this source chain (prevents duplicate batches)
+    const batch = getOrCreateBatch(sourceChainId)
     const userAddress = position.userAddress
 
     // Get actual aToken balance and convert USD base amount to token amount
@@ -329,7 +217,7 @@ export async function crossChainRebalanceAavePositions(
       continue
     }
 
-    // Withdraw the calculated amount (in token units)
+    // Withdraw the total calculated amount (in token units) for all destinations
     batch.addAction(
       new FunctionCallAction({
         target: poolAddress as Address,
@@ -341,29 +229,54 @@ export async function crossChainRebalanceAavePositions(
     )
 
     // Create voucher requests for each destination chain
-    // Convert voucher amounts from USD base to token amounts
+    // Each voucher request has a unique ref
     const vouchers = vouchersBySourceChain.get(sourceChainId) || []
-    let remainingWithdrawAmount = actualWithdrawAmount
     
-    for (let i = 0; i < vouchers.length; i++) {
-      const voucher = vouchers[i]
-      // Convert USD base amount to token amount using oracle price
+    if (vouchers.length === 0) {
+      // No vouchers to create, but batch already has withdraw action
+      continue
+    }
+
+    // Convert voucher amounts from USD base to token amounts and distribute proportionally
+    const voucherAmountsInTokens: Array<{ destChainId: number; amount: bigint }> = []
+    let totalVoucherTokens = 0n
+    
+    for (const voucher of vouchers) {
       const voucherAmountTokens = await convertUSDBaseToTokenAmount(
         voucher.amount,
         sourceChainId,
         collateralTokenAddress,
         tokenDecimals
       )
+      voucherAmountsInTokens.push({ destChainId: voucher.destChainId, amount: voucherAmountTokens })
+      totalVoucherTokens += voucherAmountTokens
+    }
+    
+    // Distribute actual withdrawal amount proportionally to avoid rounding issues
+    let remainingWithdrawAmount = actualWithdrawAmount
+    
+    for (let i = 0; i < voucherAmountsInTokens.length; i++) {
+      const voucher = voucherAmountsInTokens[i]
+      let voucherAmount: bigint
       
-      // Ensure we don't request more than we're withdrawing
-      // Distribute the actual withdraw amount proportionally
-      const voucherAmount = voucherAmountTokens > remainingWithdrawAmount
-        ? remainingWithdrawAmount
-        : voucherAmountTokens
+      if (i === voucherAmountsInTokens.length - 1) {
+        // Last voucher gets remaining amount to ensure exact match
+        voucherAmount = remainingWithdrawAmount
+      } else if (totalVoucherTokens > 0n) {
+        // Proportional distribution: (voucherAmount / totalVoucherTokens) * actualWithdrawAmount
+        voucherAmount = (voucher.amount * actualWithdrawAmount) / totalVoucherTokens
+      } else {
+        voucherAmount = 0n
+      }
+      
+      // Ensure we don't exceed remaining amount
+      voucherAmount = voucherAmount > remainingWithdrawAmount ? remainingWithdrawAmount : voucherAmount
       
       if (voucherAmount > 0n) {
+        // Create voucher request with unique ref for this source->destination pair
+        const voucherRef = `voucher_${sourceChainId}_to_${voucher.destChainId}`
         batch.addVoucherRequest({
-          ref: `voucher_${sourceChainId}_to_${voucher.destChainId}`,
+          ref: voucherRef,
           destinationChainId: BigInt(voucher.destChainId),
           tokens: [{ token: collateralToken, amount: voucherAmount }],
         })
@@ -372,15 +285,18 @@ export async function crossChainRebalanceAavePositions(
         const current = voucherAmountsByDestination.get(voucher.destChainId) || 0n
         voucherAmountsByDestination.set(voucher.destChainId, current + voucherAmount)
         
+        // Track voucher refs by destination for useVoucher calls
+        const refs = voucherRefsByDestination.get(voucher.destChainId) || []
+        refs.push(voucherRef)
+        voucherRefsByDestination.set(voucher.destChainId, refs)
+        
         remainingWithdrawAmount -= voucherAmount
       }
     }
-
-    batch.overrideUserOp(USEROP_OVERRIDE).endBatch()
   }
 
   // Step 2: Use vouchers and supply collateral on destination chains
-  // Use the tracked voucher amounts (already in token units)
+  // Use specific voucher refs instead of useAllVouchers()
   const suppliesByChain = new Map(voucherAmountsByDestination)
 
   for (const [destChainId, supplyAmountTokens] of suppliesByChain.entries()) {
@@ -391,11 +307,15 @@ export async function crossChainRebalanceAavePositions(
     const collateralTokenAddress = collateralToken.addressOn(BigInt(destChainId))
     if (!poolAddress || !collateralTokenAddress) continue
 
-    const batch = builder.startBatch(BigInt(destChainId))
+    // Get or create batch for this destination chain (prevents duplicate batches)
+    const batch = getOrCreateBatch(destChainId)
     const userAddress = position.userAddress
 
-    // Use all vouchers received on this chain
-    batch.useAllVouchers()
+    // Use specific vouchers by ref (one useVoucher call per voucher ref)
+    const voucherRefs = voucherRefsByDestination.get(destChainId) || []
+    for (const voucherRef of voucherRefs) {
+      batch.useVoucher(voucherRef)
+    }
 
     if (supplyAmountTokens > 0n) {
       // Approve Aave pool to spend collateral token
@@ -418,8 +338,6 @@ export async function crossChainRebalanceAavePositions(
         })
       )
     }
-
-    batch.overrideUserOp(USEROP_OVERRIDE).endBatch()
   }
 
   builder.useAccount(account)

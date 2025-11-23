@@ -10,28 +10,15 @@ import {
 import { formatUnits } from 'viem'
 import { type JSX } from 'react'
 import { type AavePosition } from '../provider/aave/index.ts'
+import { getChainName, getChainColor } from '../config/networks.ts'
 
 interface ChainNetworkProps {
   positions: AavePosition[]
-  chainIds: [number, number, number, number]
+  chainIds: number[]
   onChainClick?: (chainId: number) => void
 }
 
-const CHAIN_NAMES: Record<number, string> = {
-  1: 'Ethereum',
-  10: 'Optimism',
-  42161: 'Arbitrum',
-  8453: 'Base',
-}
-
-const CHAIN_COLORS: Record<number, string> = {
-  1: '#627EEA',
-  10: '#FF0420',
-  42161: '#28A0F0',
-  8453: '#0052FF',
-}
-
-const HEALTH_FACTOR_THRESHOLD = 1.2
+const HEALTH_FACTOR_THRESHOLD = 1.195
 
 export function ChainNetwork({ positions, chainIds, onChainClick }: ChainNetworkProps): JSX.Element {
   const formatHealthFactor = (hf: bigint): string => {
@@ -64,8 +51,8 @@ export function ChainNetwork({ positions, chainIds, onChainClick }: ChainNetwork
 
   const chainCards = chainIds.map((chainId) => {
     const position = getPositionForChain(chainId)
-    const chainName = CHAIN_NAMES[chainId] || `Chain ${chainId}`
-    const chainColor = CHAIN_COLORS[chainId] || '#666'
+    const chainName = getChainName(chainId)
+    const chainColor = getChainColor(chainId)
 
     return (
       <Card
@@ -192,8 +179,8 @@ export function ChainNetwork({ positions, chainIds, onChainClick }: ChainNetwork
         display: 'grid',
         gridTemplateColumns: {
           xs: '1fr',
-          sm: 'repeat(2, 1fr)',
-          md: 'repeat(4, 1fr)',
+          sm: chainIds.length >= 2 ? 'repeat(2, 1fr)' : '1fr',
+          md: chainIds.length >= 4 ? 'repeat(4, 1fr)' : chainIds.length === 3 ? 'repeat(3, 1fr)' : chainIds.length === 2 ? 'repeat(2, 1fr)' : '1fr',
         },
         gap: 2,
       }}

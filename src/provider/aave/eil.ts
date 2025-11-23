@@ -10,7 +10,8 @@ import {
 
 import { AmbireMultiChainSmartAccount } from '@eil-protocol/accounts'
 
-import { getDeploymentChains, wagmiConfig } from '../wagmiConfig.ts'
+import { wagmiConfig } from '../wagmiConfig.ts'
+import { getDeploymentChains } from '../../config/networks.ts'
 
 
 
@@ -55,7 +56,7 @@ async function fetchWalletClient (): Promise<WalletClient | undefined> {
  * However, the SDK works with any valid implementation of the {@link IMultiChainSmartAccount} interface.
  */
 export async function createEilSdk (): Promise<{ sdk: CrossChainSdk, account: AmbireMultiChainSmartAccount }> {
-    const [chainId0, chainId1, chainId2, chainId3] = getDeploymentChains()
+    const chainIds = getDeploymentChains()
   
     const walletClient: WalletClient | undefined = await fetchWalletClient()
     if (walletClient == null) {
@@ -66,7 +67,7 @@ export async function createEilSdk (): Promise<{ sdk: CrossChainSdk, account: Am
     const ambireAccount = new AmbireMultiChainSmartAccount(
       walletClient,
       walletAccount,
-      [BigInt(chainId0), BigInt(chainId1), BigInt(chainId2), BigInt(chainId3)],
+      chainIds.map(chainId => BigInt(chainId)),
       ambireBundlerManager
     )
     await ambireAccount.init()
