@@ -402,20 +402,31 @@ export async function crossChainRebalanceAavePositions(
       }
 
       // If there's a remainder and more destinations in the chain, create voucher to next destination
+      // Only create voucher if:
+      // 1. There's actually a remainder (remainder > 0)
+      // 2. There's a next destination in the chain (i < chainOrder.length - 1)
+      // 3. The next destination actually needs funds (has a need > 0)
       if (remainder > 0n && i < chainOrder.length - 1) {
         const nextDestChainId = chainOrder[i + 1]
-        const nextVoucherRef = `voucher_${destChainId}_to_${nextDestChainId}`
         
-        batch.addVoucherRequest({
-          ref: nextVoucherRef,
-          destinationChainId: BigInt(nextDestChainId),
-          tokens: [{ token: collateralToken, amount: remainder }],
-        })
+        // Check if next destination actually needs funds
+        const nextNeededUSD = needsByDestination.get(nextDestChainId) || 0n
+        if (nextNeededUSD > 0n) {
+          const nextVoucherRef = `voucher_${destChainId}_to_${nextDestChainId}`
+          
+          batch.addVoucherRequest({
+            ref: nextVoucherRef,
+            destinationChainId: BigInt(nextDestChainId),
+            tokens: [{ token: collateralToken, amount: remainder }],
+          })
 
-        // Track voucher for next destination
-        const nextRefs = voucherRefsByDestination.get(nextDestChainId) || []
-        nextRefs.push(nextVoucherRef)
-        voucherRefsByDestination.set(nextDestChainId, nextRefs)
+          // Track voucher for next destination
+          const nextRefs = voucherRefsByDestination.get(nextDestChainId) || []
+          nextRefs.push(nextVoucherRef)
+          voucherRefsByDestination.set(nextDestChainId, nextRefs)
+        }
+        // If next destination doesn't need funds, we don't create a voucher
+        // The remainder stays on the current chain (which is fine)
       }
 
       remainingAmount = remainder
